@@ -700,6 +700,233 @@ function open_(p){ showUpdated(); setTimeout(checkForUpdate,1500); $('lock').hid
   };
 })();
 </script>
+<script>
+// ---- MKD updater: reads the Google Sheet, rebuilds the MKD numbers, re-encrypts and publishes to GitHub ----
+// Lives inside index.html (copied in by hand once). Each publish copies the current page source, so it carries itself forward.
+(function(){
+const CFG={
+  sheet:'1qEoWbIaGcNOdd7n9xzmhChEZf6Xp27FucBQLP-M2oWg',   // MKD order sheet (shared "anyone with the link can view")
+  from:'2026-05',             // tabs from this month on are rebuilt from the sheet; earlier months stay as they are
+  repo:'zeostuff/lb-output', file:'index.html', branch:'main',
+  sheetjs:'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
+};
+const MON={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+const BRAND={'sportsbook':'BetUS Sportsbook','betus sportsbook':'BetUS Sportsbook','betus casino':'BetUS Casino','casino':'BetUS Casino',
+  'slotsparadise':'Slots Paradise','slots paradise':'Slots Paradise','vegas aces':'Vegas Aces','vegasaces':'Vegas Aces','betus tv':'BetUS TV',
+  'offshorebillofrights':'Offshorebillofrights'};
+const NAMES={'atanas m':'Nace','aleksandar':'Cvetanovski','slobodan':'Bobi','atanas g.':'Atanas G','atanas. g':'Atanas G','atanas g':'Atanas G'};
+const PLAT={'zentry':'Zentury','gallileo':'Gallileoweb'};
+const RATE=[['£',1.33],['GBP',1.33],['EUR',1.14],['€',1.14]];   // same rates as the earlier builds
+const half=x=>{const f=Math.floor(x),d=x-f; return Math.abs(d-.5)<1e-9?(f%2?f+1:f):Math.round(x);};   // round half to even, like the old builder
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const N=n=>Number(n).toLocaleString('en-US');
+
+function tabMonth(name){
+  const m=String(name).trim().match(/^([A-Za-z]{3})[a-z]*\.?\s+'?(\d{2}|\d{4})$/);
+  if(!m||!MON[m[1].toLowerCase()]) return null;
+  const y=m[2].length===2?2000+ +m[2]:+m[2];
+  return `${y}-${String(MON[m[1].toLowerCase()]).padStart(2,'0')}`;
+}
+function money(v){
+  if(v==null||v==='') return {c:null};
+  if(typeof v==='number') return {c:v};
+  const s=String(v).trim(), n=parseFloat(s.replace(/,/g,'').replace(/[^\d.]/g,''));
+  if(isNaN(n)) return {c:null};
+  for(const [k,r] of RATE) if(s.toUpperCase().includes(k.toUpperCase())) return {c:half(n*r),cr:s};
+  return {c:n};
+}
+function parseSheet(wb){
+  const rows=[], months=[], unknown={brand:new Set(),tabs:[]};
+  for(const name of wb.SheetNames){
+    const p=tabMonth(name); if(!p) continue;
+    if(p<CFG.from){ unknown.tabs.push(name); continue; }
+    months.push(p);
+    const A=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    const h=(A[0]||[]).map(x=>String(x||'').trim().toLowerCase());
+    const col=(n,f)=>{const i=h.indexOf(n);return i>=0?i:f};
+    const cS=col('target website',0), cC=col('cost',1), cO=col('outreach',2), cP=col('product',3), cL=h.indexOf('live url');
+    for(const r of A.slice(1)){
+      const site=r[cS]; if(site==null||!String(site).trim()) continue;
+      let o=String(r[cO]||'').trim(); if(!o) continue;
+      let k='in'; const pm=o.match(/^p\.\s*(.+)$/i);
+      if(pm){ k='pl'; o=pm[1].trim(); o=PLAT[o.toLowerCase()]||o; } else o=NAMES[o.toLowerCase()]||o;
+      const braw=String(r[cP]||'').trim(), b=BRAND[braw.toLowerCase()]||braw;
+      if(!BRAND[braw.toLowerCase()]) unknown.brand.add(braw||'(empty)');
+      const lu=cL>=0?String(r[cL]||'').trim():'';
+      const m=money(r[cC]);
+      const row={s:String(site).trim(),o,b,u:/^https?:\/\//i.test(lu)?lu:'',p,k,c:m.c};
+      if(m.cr) row.cr=m.cr;
+      rows.push(row);
+    }
+  }
+  return {rows,months:[...new Set(months)].sort(),unknown};
+}
+function buildPeriods(oldPeriods,months){
+  const now=new Date(), cur=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const keep=oldPeriods.filter(p=>p.k<CFG.from);
+  const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fresh=months.map(k=>{
+    const y=+k.slice(0,4), m=+k.slice(5), l=`${MN[m-1]} ${String(y).slice(2)}`;
+    if(k===cur) return {k,l:l+'*',w:1,y,partial:true};
+    if(k>cur) return {k,l:l+' plan',w:0,y,planned:true};
+    return {k,l,w:1,y};
+  });
+  return [...keep,...fresh];
+}
+function summary(data,periods){
+  const by={}; periods.forEach(p=>by[p.k]={l:p.l,n:0,live:0});
+  data.forEach(r=>{ if(by[r.p]){ by[r.p].n++; if(r.u) by[r.p].live++; } });
+  return by;
+}
+
+// ---- encryption (same format the lock screen reads) ----
+const b64e=u8=>{let s='';for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s)};
+async function encrypt(obj,pw){
+  const salt=crypto.getRandomValues(new Uint8Array(16)), iv=crypto.getRandomValues(new Uint8Array(12)), iter=310000;
+  const base=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+  const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:iter,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt']);
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify(obj)));
+  return {salt:b64e(salt),iv:b64e(iv),iter,ct:b64e(new Uint8Array(ct))};
+}
+
+// ---- GitHub ----
+async function gh(method,path,token,body){
+  const r=await fetch(`https://api.github.com/repos/${CFG.repo}/${path}`,{method,cache:'no-store',
+    headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'},body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){ const e=new Error(j.message||('HTTP '+r.status)); e.status=r.status; throw e; }
+  return j;
+}
+async function currentSource(token){
+  // newest page source straight from the repo (avoids the GitHub Pages cache)
+  const meta=await gh('GET',`contents/${CFG.file}?ref=${CFG.branch}`,token);
+  const blob=await gh('GET',`git/blobs/${meta.sha}`,token);
+  const bin=atob(blob.content.replace(/\n/g,'')), u8=Uint8Array.from(bin,c=>c.charCodeAt(0));
+  return {sha:meta.sha,html:new TextDecoder().decode(u8)};
+}
+
+// ---- panel ----
+let NEW=null, SRC=null;
+function ui(){
+  const css=`.upd-btn{font:inherit;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:4px 12px;border-radius:6px;cursor:pointer;min-height:30px;margin-left:auto}
+.upd-btn:hover,.upd-btn:focus-visible{border-color:var(--hl-live);color:var(--hl-live)}
+.upd-dlg{border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);padding:0;width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 40px)}
+.upd-dlg::backdrop{background:rgba(10,20,40,.55)}
+.upd-in{padding:20px 22px}
+.upd-in h2{margin:0 0 4px;font-size:26px}
+.upd-in p{color:var(--muted);margin:4px 0 12px}
+.upd-step{border-top:1px solid var(--line);padding:14px 0}
+.upd-step h3{font-family:"Barlow Condensed",sans-serif;font-size:19px;margin:0 0 8px}
+.upd-in label{display:block;font-size:13px;color:var(--muted);margin:8px 0 4px}
+.upd-in input[type=password],.upd-in input[type=text]{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-height:40px}
+.upd-in .chk{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px}
+.upd-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
+.upd-go{font:inherit;font-weight:600;border:0;border-radius:6px;padding:8px 16px;min-height:40px;background:var(--hl-live);color:var(--surface);cursor:pointer}
+.upd-go:disabled{opacity:.5;cursor:default}
+.upd-x{font:inherit;border:1px solid var(--line);border-radius:6px;padding:8px 14px;min-height:40px;background:var(--surface);color:var(--ink);cursor:pointer}
+.upd-msg{font-size:14px;min-height:1.4em}
+.upd-msg.err{color:#C0392B}.upd-msg.ok{color:var(--hl-live);font-weight:600}
+.upd-tbl{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+.upd-tbl th,.upd-tbl td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+.upd-tbl th:first-child,.upd-tbl td:first-child{text-align:left}
+.upd-tbl .up{color:var(--hl-live);font-weight:600}.upd-tbl .dn{color:#C0392B;font-weight:600}
+.upd-scroll{max-height:300px;overflow:auto}
+.upd-warn{background:var(--gold-soft);border-radius:6px;padding:8px 10px;font-size:13px;margin-top:8px}`;
+  const st=document.createElement('style'); st.textContent=css; document.head.appendChild(st);
+  const btn=document.createElement('button'); btn.type='button'; btn.className='upd-btn'; btn.id='updOpen'; btn.textContent='Update MKD data';
+  document.querySelector('.updrow').appendChild(btn);
+  const d=document.createElement('dialog'); d.className='upd-dlg'; d.id='updDlg';
+  d.innerHTML=`<div class="upd-in">
+    <h2>Update MKD data</h2>
+    <p>Reads the MKD order sheet, rebuilds ${esc(CFG.from.slice(5))}/${esc(CFG.from.slice(0,4))} onwards, and publishes the page. CR and earlier MKD months are kept as they are.</p>
+    <div class="upd-step"><h3>1. Read the Google Sheet</h3>
+      <div class="upd-row"><button type="button" class="upd-go" id="updFetch">Read sheet</button>
+      <a href="https://docs.google.com/spreadsheets/d/${CFG.sheet}/edit" target="_blank" rel="noopener" style="font-size:14px">Open sheet</a></div>
+      <p class="upd-msg" id="updMsg1" role="status"></p><div id="updPrev"></div></div>
+    <div class="upd-step"><h3>2. Publish</h3>
+      <label for="updTok">GitHub token (needs write access to ${esc(CFG.repo)})</label>
+      <input type="password" id="updTok" autocomplete="off" spellcheck="false">
+      <label class="chk"><input type="checkbox" id="updRem"> Remember the token in this browser</label>
+      <div class="upd-row"><button type="button" class="upd-go" id="updPub" disabled>Publish update</button><button type="button" class="upd-x" id="updClose">Close</button></div>
+      <p class="upd-msg" id="updMsg2" role="status"></p></div>
+  </div>`;
+  document.body.appendChild(d);
+  try{ const t=localStorage.getItem('lb-gh-token'); if(t){ $('updTok').value=t; $('updRem').checked=true; } }catch(e){}
+  btn.onclick=()=>{ d.showModal(); };
+  $('updClose').onclick=()=>d.close();
+  $('updFetch').onclick=readSheet;
+  $('updPub').onclick=publish;
+}
+function msg(id,t,cls){ const e=$(id); e.textContent=t; e.className='upd-msg'+(cls?' '+cls:''); }
+
+async function loadSheetJS(){
+  if(window.XLSX) return;
+  await new Promise((ok,no)=>{const s=document.createElement('script'); s.src=CFG.sheetjs; s.onload=ok; s.onerror=()=>no(new Error('Could not load the spreadsheet reader.')); document.head.appendChild(s);});
+}
+async function readSheet(){
+  $('updFetch').disabled=true; $('updPub').disabled=true; NEW=null; $('updPrev').innerHTML=''; msg('updMsg1','Reading the sheet…');
+  try{
+    await loadSheetJS();
+    const r=await fetch(`https://docs.google.com/spreadsheets/d/${CFG.sheet}/export?format=xlsx&t=${Date.now()}`,{cache:'no-store'});
+    if(!r.ok) throw new Error('Google returned HTTP '+r.status+'. Check that the sheet is shared as “Anyone with the link can view”.');
+    const wb=XLSX.read(await r.arrayBuffer(),{type:'array'});
+    const P=parseSheet(wb);
+    if(!P.rows.length) throw new Error('No rows found in the monthly tabs.');
+    const pw=sessionStorage.getItem('lb-pw'); if(!pw) throw new Error('Unlock the page again (reload it), then retry.');
+    const full=await unlock(pw);   // fresh copy of everything currently on the page
+    const mk=full.datasets.MKD, oldData=mk.data, oldPer=mk.periods;
+    const keepRows=oldData.filter(x=>x.p<CFG.from);
+    const periods=buildPeriods(oldPer,P.months);
+    const data=[...keepRows,...P.rows];
+    const today=new Date().toISOString().slice(0,10);
+    mk.data=data; mk.periods=periods; mk.foot=mk.foot.replace(/Built \d{4}-\d{2}-\d{2}/,'Built '+today);
+    NEW=full;
+    // preview
+    const a=summary(oldData,oldPer), b=summary(data,periods);
+    const keys=[...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>k>=CFG.from).sort();
+    const d=(x,y)=>{const v=y-x; return v?`<span class="${v>0?'up':'dn'}">${v>0?'+':''}${v}</span>`:'—'};
+    let changed=0; keys.forEach(k=>{const o=a[k]||{n:0,live:0}, n=b[k]||{n:0,live:0}; if(o.n!==n.n||o.live!==n.live) changed++;});
+    const cell=(x,y)=>x===y?`${y}`:`${x} → <b>${y}</b> ${d(x,y)}`;
+    $('updPrev').innerHTML=`<div class="upd-scroll"><table class="upd-tbl"><thead><tr><th>Month</th><th>Links (now → sheet)</th><th>Live (now → sheet)</th></tr></thead><tbody>${
+      keys.map(k=>{const o=a[k]||{n:0,live:0}, n=b[k]||{n:0,live:0}; return `<tr><td>${esc((b[k]||a[k]).l)}</td><td>${cell(o.n,n.n)}</td><td>${cell(o.live,n.live)}</td></tr>`}).join('')
+    }</tbody></table></div>`+
+    (P.unknown.brand.size?`<div class="upd-warn">Products not recognised, kept as written: ${[...P.unknown.brand].map(esc).join(', ')}</div>`:'');
+    msg('updMsg1',`Read ${N(P.rows.length)} links from ${P.months.length} monthly tabs. ${changed?changed+' month'+(changed>1?'s':'')+' changed.':'Nothing changed since the last update.'}`,'ok');
+    $('updPub').disabled=false;
+  }catch(e){ msg('updMsg1',e.message,'err'); }
+  finally{ $('updFetch').disabled=false; }
+}
+async function publish(){
+  const token=$('updTok').value.trim();
+  if(!NEW){ msg('updMsg2','Read the sheet first.','err'); return; }
+  if(!token){ msg('updMsg2','Paste the GitHub token first.','err'); $('updTok').focus(); return; }
+  try{ if($('updRem').checked) localStorage.setItem('lb-gh-token',token); else localStorage.removeItem('lb-gh-token'); }catch(e){}
+  $('updPub').disabled=true; $('updFetch').disabled=true;
+  try{
+    msg('updMsg2','Loading the current page from GitHub…');
+    const {sha,html}=await currentSource(token);
+    msg('updMsg2','Encrypting with the current password…');
+    const enc=await encrypt(NEW,sessionStorage.getItem('lb-pw'));
+    const stamp=new Date().toISOString().replace(/\.\d+Z$/,'+00:00');
+    let out=html.replace(/const PAYLOAD = \{.*?\};\n/s,()=>'const PAYLOAD = '+JSON.stringify(enc)+';\n');
+    if(out===html) throw new Error('Could not find the data block in the page. Nothing was published.');
+    out=out.replace(/<meta name="lb-build" content="[^"]*">/,`<meta name="lb-build" content="${stamp}">`);
+    msg('updMsg2','Publishing…');
+    const content=b64e(new TextEncoder().encode(out));
+    const res=await gh('PUT',`contents/${CFG.file}`,token,{message:'Update MKD data from Google Sheet',branch:CFG.branch,sha,content});
+    msg('updMsg2',`Published (commit ${res.commit.sha.slice(0,7)}). The site shows it in about a minute; open pages will offer a Refresh.`,'ok');
+    NEW=null;
+  }catch(e){
+    const hint=e.status===401?' The token was not accepted.':e.status===403||e.status===404?' The token has no write access to '+CFG.repo+'.':e.status===409?' The page changed on GitHub meanwhile. Read the sheet again and retry.':'';
+    msg('updMsg2','Publish failed: '+e.message+'.'+hint,'err');
+    $('updPub').disabled=!NEW;
+  }finally{ $('updFetch').disabled=false; }
+}
+window.LBU={CFG,parseSheet,buildPeriods,encrypt,ui};
+if(document.querySelector('.updrow')) ui();
+})();
+</script>
 <button type="button" id="toTop" class="totop" aria-label="Scroll to top" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
 <script>(function(){var b=document.getElementById('toTop');function t(){b.hidden=window.scrollY<400}window.addEventListener('scroll',t,{passive:true});b.onclick=function(){window.scrollTo({top:0,behavior:'smooth'})};t()})();</script>
 </body>

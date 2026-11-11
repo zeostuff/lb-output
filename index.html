@@ -716,6 +716,7 @@ const BRAND={'sportsbook':'BetUS Sportsbook','betus sportsbook':'BetUS Sportsboo
   'offshorebillofrights':'Offshorebillofrights'};
 const NAMES={'atanas m':'Nace','aleksandar':'Cvetanovski','slobodan':'Bobi','atanas g.':'Atanas G','atanas. g':'Atanas G','atanas g':'Atanas G'};
 const PLAT={'zentry':'Zentury','gallileo':'Gallileoweb'};
+const EXCLUDE=new Set(['Offshorebillofrights']);   // products left out of the dashboard entirely (they don't count toward the goal)
 const RATE=[['£',1.33],['GBP',1.33],['EUR',1.14],['€',1.14]];   // same rates as the earlier builds
 const half=x=>{const f=Math.floor(x),d=x-f; return Math.abs(d-.5)<1e-9?(f%2?f+1:f):Math.round(x);};   // round half to even, like the old builder
 const $=id=>document.getElementById(id);
@@ -752,6 +753,7 @@ function parseSheet(wb){
       let k='in'; const pm=o.match(/^p\.\s*(.+)$/i);
       if(pm){ k='pl'; o=pm[1].trim(); o=PLAT[o.toLowerCase()]||o; } else o=NAMES[o.toLowerCase()]||o;
       const braw=String(r[cP]||'').trim(), b=BRAND[braw.toLowerCase()]||braw;
+      if(EXCLUDE.has(b)){ unknown.skipped=(unknown.skipped||0)+1; continue; }
       if(!BRAND[braw.toLowerCase()]) unknown.brand.add(braw||'(empty)');
       const lu=cL>=0?String(r[cL]||'').trim():'';
       const m=money(r[cC]);
@@ -876,7 +878,7 @@ async function readSheet(){
     const pw=sessionStorage.getItem('lb-pw'); if(!pw) throw new Error('Unlock the page again (reload it), then retry.');
     const full=await unlock(pw);   // fresh copy of everything currently on the page
     const mk=full.datasets.MKD, oldData=mk.data, oldPer=mk.periods;
-    const keepRows=oldData.filter(x=>x.p<CFG.from);
+    const keepRows=oldData.filter(x=>x.p<CFG.from && !EXCLUDE.has(x.b));
     const periods=buildPeriods(oldPer,P.months);
     const data=[...keepRows,...P.rows];
     const today=new Date().toISOString().slice(0,10);
@@ -891,6 +893,7 @@ async function readSheet(){
     $('updPrev').innerHTML=`<div class="upd-scroll"><table class="upd-tbl"><thead><tr><th>Month</th><th>Links (now → sheet)</th><th>Live (now → sheet)</th></tr></thead><tbody>${
       keys.map(k=>{const o=a[k]||{n:0,live:0}, n=b[k]||{n:0,live:0}; return `<tr><td>${esc((b[k]||a[k]).l)}</td><td>${cell(o.n,n.n)}</td><td>${cell(o.live,n.live)}</td></tr>`}).join('')
     }</tbody></table></div>`+
+    (P.unknown.skipped?`<div class="upd-warn">Left out (not counted): ${P.unknown.skipped} ${[...EXCLUDE].map(esc).join(', ')} link${P.unknown.skipped>1?'s':''}.</div>`:'')+
     (P.unknown.brand.size?`<div class="upd-warn">Products not recognised, kept as written: ${[...P.unknown.brand].map(esc).join(', ')}</div>`:'');
     msg('updMsg1',`Read ${N(P.rows.length)} links from ${P.months.length} monthly tabs. ${changed?changed+' month'+(changed>1?'s':'')+' changed.':'Nothing changed since the last update.'}`,'ok');
     $('updPub').disabled=false;

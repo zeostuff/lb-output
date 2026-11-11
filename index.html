@@ -816,7 +816,10 @@ function ui(){
 .upd-dlg{border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);padding:0;width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 40px)}
 .upd-dlg::backdrop{background:rgba(10,20,40,.55)}
 .upd-in{padding:20px 22px}
-.upd-in h2{margin:0 0 4px;font-size:26px}
+.upd-in{position:relative}
+.upd-in h2{margin:0 0 4px;font-size:26px;padding-right:44px}
+.upd-xbtn{position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.upd-xbtn:hover,.upd-xbtn:focus-visible{border-color:var(--ink)}
 .upd-in p{color:var(--muted);margin:4px 0 12px}
 .upd-step{border-top:1px solid var(--line);padding:14px 0}
 .upd-step h3{font-family:"Barlow Condensed",sans-serif;font-size:19px;margin:0 0 8px}
@@ -840,6 +843,7 @@ function ui(){
   document.querySelector('.updrow').appendChild(btn);
   const d=document.createElement('dialog'); d.className='upd-dlg'; d.id='updDlg';
   d.innerHTML=`<div class="upd-in">
+    <button type="button" class="upd-xbtn" id="updX" aria-label="Close">×</button>
     <h2>Update MKD data</h2>
     <p>Reads the MKD order sheet, rebuilds ${esc(CFG.from.slice(5))}/${esc(CFG.from.slice(0,4))} onwards, and publishes the page. CR and earlier MKD months are kept as they are.</p>
     <div class="upd-step"><h3>1. Read the Google Sheet</h3>
@@ -857,6 +861,8 @@ function ui(){
   try{ const t=localStorage.getItem('lb-gh-token'); if(t){ $('updTok').value=t; $('updRem').checked=true; } }catch(e){}
   btn.onclick=()=>{ d.showModal(); };
   $('updClose').onclick=()=>d.close();
+  $('updX').onclick=()=>d.close();
+  d.addEventListener('click',e=>{ if(e.target===d) d.close(); });   // click outside the box closes it (Esc works too)
   $('updFetch').onclick=readSheet;
   $('updPub').onclick=publish;
 }
@@ -920,6 +926,9 @@ async function publish(){
     const res=await gh('PUT',`contents/${CFG.file}`,token,{message:'Update MKD data from Google Sheet',branch:CFG.branch,sha,content});
     msg('updMsg2',`Published (commit ${res.commit.sha.slice(0,7)}). The site shows it in about a minute; open pages will offer a Refresh.`,'ok');
     NEW=null;
+    setTimeout(()=>{ $('updDlg').close(); $('updPrev').innerHTML=''; msg('updMsg1',''); msg('updMsg2',''); },2000);
+    // watch for the new version so the "New data available · Refresh" button shows here as soon as it's live
+    let n=0; const w=setInterval(()=>{ if(++n>20||!$('newData').hidden){ clearInterval(w); return; } try{ checkForUpdate(); }catch(e){} },15000);
   }catch(e){
     const hint=e.status===401?' The token was not accepted.':e.status===403||e.status===404?' The token has no write access to '+CFG.repo+'.':e.status===409?' The page changed on GitHub meanwhile. Read the sheet again and retry.':'';
     msg('updMsg2','Publish failed: '+e.message+'.'+hint,'err');

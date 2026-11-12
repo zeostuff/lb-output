@@ -28,7 +28,7 @@
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 *,*::before,*::after{box-sizing:inherit}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Barlow,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:1280px;margin:0 auto;padding:28px 20px 60px}
+.wrap{max-width:1380px;margin:0 auto;padding:28px 20px 60px}
 h1,h2,.num{font-family:"Barlow Condensed","Arial Narrow",Barlow,sans-serif}
 h1{font-size:34px;line-height:1.1;margin:0 0 4px;font-weight:700}
 h2{font-size:24px;margin:40px 0 4px;font-weight:600}
@@ -118,16 +118,16 @@ tr.detail>td{padding:0;background:var(--bg);text-align:left;white-space:normal}
 /* frozen summary columns on the right; only month columns scroll */
 .sr{position:sticky;background:var(--surface);z-index:1}
 th.sr{z-index:3}
-.sr0{right:0;width:130px;min-width:130px;max-width:130px}
-.sr1{right:130px;width:104px;min-width:104px;max-width:104px}
-.sr2{right:234px;width:140px;min-width:140px;max-width:140px}
-.sr3{right:374px;width:70px;min-width:70px;max-width:70px}
-.sr4{right:444px;width:110px;min-width:110px;max-width:110px}
-.sr5{right:554px;width:76px;min-width:76px;max-width:76px;box-shadow:-8px 0 8px -6px rgba(0,0,0,.18);border-left:1px solid var(--line)}
+.srP{right:0;width:96px;min-width:96px;max-width:96px} .sr0{right:96px;width:130px;min-width:130px;max-width:130px}
+.sr1{right:226px;width:104px;min-width:104px;max-width:104px}
+.sr2{right:330px;width:140px;min-width:140px;max-width:140px}
+.sr3{right:470px;width:70px;min-width:70px;max-width:70px}
+.sr4{right:540px;width:110px;min-width:110px;max-width:110px}
+.sr5{right:650px;width:76px;min-width:76px;max-width:76px;box-shadow:-8px 0 8px -6px rgba(0,0,0,.18);border-left:1px solid var(--line)}
 th:first-child,td:first-child{box-shadow:8px 0 8px -6px rgba(0,0,0,.18)}
 th:first-child{z-index:3}
 tr.detail>td:first-child,.links td:first-child,.links th:first-child{box-shadow:none}
-.links{position:sticky;left:0;width:min(100vw - 42px,1238px);box-sizing:border-box}
+.links{position:sticky;left:0;width:min(100vw - 42px,1338px);box-sizing:border-box}
 @media (max-width:760px){.sr{position:static;box-shadow:none}}
 
 /* Total and Live: the two numbers that matter most */
@@ -136,6 +136,7 @@ td.hlT,td.hlL{font-weight:700;font-size:19px}
 .hlL,th.hlL.sorted{color:var(--hl-live)}
 tr.total td.hlT,tr.total td.hlL{font-size:20px}
 td.hlA{font-weight:700;font-size:18px}
+td.srP{font-size:17px}
 .hlA,th.hlA.sorted{color:var(--hl-avg)}
 .lock{min-height:100vh;display:grid;place-items:center;padding:20px}
 .lock-box{width:min(100%,420px);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:26px 24px}
@@ -389,10 +390,17 @@ function compute(){
     o.avg = o.months?o.done/o.months:0;
     o.avgLive = o.months?o.live/o.months:0;
     o.pend = o.total-o.live; o.rate = o.total?o.live/o.total:0;
+    o.price = avgPrice(o.links);
   });
   return {per,months,rows,people:Object.values(by)};
 }
 
+function avgPrice(rows){
+  // average price of live links: each live URL once, links without a price skipped (same rule as the year cards)
+  const seen=new Set(), key=u=>u.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/,'').replace(/\/+$/,'');
+  const P=rows.filter(r=>r.u&&!seen.has(key(r.u))&&seen.add(key(r.u))&&r.c!=null);
+  return P.length?P.reduce((a,r)=>a+r.c,0)/P.length:null;
+}
 function sortList(list,key){
   const [f,dir]=state.sort[key];
   return list.sort((a,b)=> f==='name'? dir*a.name.localeCompare(b.name) : dir*((a[f]??0)-(b[f]??0)) || a.name.localeCompare(b.name));
@@ -404,13 +412,13 @@ function table(el,key,list,per,months){
   if(!list.length){el.innerHTML='<tbody><tr><td class="empty">No links match these filters. Widen the month range or clear the search.</td></tr></tbody>';return}
   sortList(list,key);
   const maxCell=Math.max(1,...list.flatMap(o=>Object.values(o.cells).map(c=>c.t)));
-  const cols=[['name',key==='people'?'Person':'Platform'],...per.map(p=>[p.k,p.l]),['total','Total'],['avg','Avg / month'],['live','Live'],['avgLive','Live avg / month'],['pend',PEND_LABEL],['rate','Live rate']];
+  const cols=[['name',key==='people'?'Person':'Platform'],...per.map(p=>[p.k,p.l]),['total','Total'],['avg','Avg / month'],['live','Live'],['avgLive','Live avg / month'],['pend',PEND_LABEL],['rate','Live rate'],['price','Avg price']];
   const [sf,sd]=state.sort[key];
   let h='<thead><tr>'+cols.map(([k,l])=>{
     const sortable=!/^20\d\d-/.test(k);
-    const SR={total:5,avg:4,live:3,avgLive:2,pend:1,rate:0};
+    const SR={total:5,avg:4,live:3,avgLive:2,pend:1,rate:0,price:'P'};
     const cls=[sortable&&sf===k?'sorted':'',sd===1&&sf===k?'asc':'',k==='avgLive'?'key':'',k in SR?'sr sr'+SR[k]:'',k==='total'?'hlT':k==='live'?'hlL':k==='avg'?'hlA':''].join(' ');
-    return `<th ${sortable?`data-k="${k}" tabindex="0"`:''} class="${cls}" scope="col">${l}</th>`}).join('')+'</tr></thead><tbody>';
+    return `<th ${sortable?`data-k="${k}" tabindex="0"`:''} class="${cls}" scope="col"${k==='price'?' title="Average price of their live links. Each live URL counts once; links without a price are skipped."':''}>${l}</th>`}).join('')+'</tr></thead><tbody>';
   const tot={total:0,live:0,done:0,cells:{}};
   list.forEach(o=>{
     const id=key+':'+o.name, open=state.open.has(id);
@@ -423,7 +431,7 @@ function table(el,key,list,per,months){
       h+=`<td class="m" style="background:rgba(var(--heat),${a.toFixed(3)})">${c?`${c.l}<span> / ${c.t}</span>`:'<span>—</span>'}</td>`;
     });
     h+=`<td class="num sr sr5 hlT">${o.total}</td><td class="num sr sr4 hlA">${fmt(o.avg)}</td><td class="num sr sr3 hlL">${o.live}</td><td class="num key sr sr2">${fmt(o.avgLive)}</td><td class="num sr sr1">${o.pend}</td>
-        <td class="sr sr0"><span class="rate"><span class="minibar"><i style="width:${(o.rate*100).toFixed(0)}%"></i></span>${(o.rate*100).toFixed(0)}%</span></td></tr>`;
+        <td class="sr sr0"><span class="rate"><span class="minibar"><i style="width:${(o.rate*100).toFixed(0)}%"></i></span>${(o.rate*100).toFixed(0)}%</span></td><td class="num sr srP">${o.price==null?'<span class="muted">—</span>':USD(o.price)}</td></tr>`;
     if(open){
       const links=[...o.links].sort((a,b)=>a.p.localeCompare(b.p));
       h+=`<tr class="detail"><td colspan="${cols.length}"><div class="links"><table><thead><tr><th>Period</th><th>Brand</th><th>Website</th><th>Price</th><th>Status</th><th>Live URL</th></tr></thead><tbody>`+
@@ -433,7 +441,7 @@ function table(el,key,list,per,months){
   });
   const tm=months||1;
   h+=`<tr class="total"><td>All ${key==='people'?'team members':'platforms'}</td>`+per.map(p=>{const c=tot.cells[p.k];return `<td class="m">${c?`${c.l}<span> / ${c.t}</span>`:'<span>—</span>'}</td>`}).join('')+
-     `<td class="num sr sr5 hlT">${tot.total}</td><td class="num sr sr4 hlA">${fmt(tot.done/tm)}</td><td class="num sr sr3 hlL">${tot.live}</td><td class="num key sr sr2">${fmt(tot.live/tm)}</td><td class="num sr sr1">${tot.total-tot.live}</td><td class="sr sr0">${tot.total?Math.round(tot.live/tot.total*100):0}%</td></tr>`;
+     `<td class="num sr sr5 hlT">${tot.total}</td><td class="num sr sr4 hlA">${fmt(tot.done/tm)}</td><td class="num sr sr3 hlL">${tot.live}</td><td class="num key sr sr2">${fmt(tot.live/tm)}</td><td class="num sr sr1">${tot.total-tot.live}</td><td class="sr sr0">${tot.total?Math.round(tot.live/tot.total*100):0}%</td><td class="num sr srP">${(p=>p==null?'—':USD(p))(avgPrice(list.flatMap(o=>o.links)))}</td></tr>`;
   el.innerHTML=h+'</tbody>';
   el.querySelectorAll('th[data-k]').forEach(th=>{
     const go=()=>{const k=th.dataset.k;const [f,d]=state.sort[key];state.sort[key]=[k,f===k?-d:(k==='name'?1:-1)];render()};
